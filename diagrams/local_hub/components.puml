@@ -1,0 +1,41 @@
+@startuml
+!include ../c4/C4_Component.puml
+
+title "Локальный Хаб (Edge) — Диаграмма компонентов (C4 Component Diagram)"
+
+Container(iot_gateway, "IoT Gateway Service", "Go", "Облачная точка входа.")
+Container(api_gateway, "API Gateway", "Kong / Nginx", "Облачный шлюз для синхронизации конфигураций.")
+Container_Ext(local_sensor, "Локальный датчик / реле", "Zigbee / Matter", "Датчики температуры, реле света, замки.")
+
+Container_Boundary(local_hub_boundary, "Local Hub (Matter/Zigbee Controller)") {
+    Component(local_web_server, "Local Admin UI / Provisioning", "Go / Python Web Server", "Локальная админка для первой настройки хаба (подключение к Wi-Fi, привязка аккаунта).")
+    
+    Component(protocol_adapter, "Protocol Adapter (Zigbee/Matter/Thread)", "Driver / C++ / Go", "Опрашивает локальные приборы по радиопротоколам и отправляет управляющие команды.")
+    Component(state_cache, "Local State Cache", "In-Memory Map", "Хранит текущее состояние (температура, статус реле) всех присоединенных датчиков.")
+    
+    Component(edge_engine, "Edge Automation Engine", "Go Component", "Автономно выполняет сценарии автоматизации на основе изменений в State Cache.")
+    Component(local_db, "Local DB (Rules & Config)", "SQLite", "Хранит синхронизированные правила автоматизации и конфигурацию хаба.")
+    
+    Component(offline_buffer, "Offline Telemetry Buffer", "SQLite / SQLite WAL", "Сохраняет телеметрию локально при потере связи с интернетом.")
+    Component(cloud_sync, "Cloud Sync & Command Client", "WebSocket Client", "Поддерживает сокет с облаком, шлет телеметрию (живую или из буфера), принимает команды.")
+}
+
+' Связи физических приборов с хабом
+Rel(local_sensor, protocol_adapter, "Шлет показания / принимает команды", "Zigbee / Matter")
+
+' Внутренние связи локального хаба
+Rel(protocol_adapter, state_cache, "Обновляет текущие значения датчиков")
+Rel(state_cache, edge_engine, "События изменения состояния триггерят правила")
+Rel(edge_engine, local_db, "Читает локальные правила автоматизации")
+Rel(edge_engine, protocol_adapter, "Отправляет команды управления (например, включить реле)")
+
+Rel(protocol_adapter, offline_buffer, "Записывает показания датчиков")
+Rel(offline_buffer, cloud_sync, "Читает накопленные данные для отправки")
+Rel(cloud_sync, iot_gateway, "Передает телеметрию и слушает команды", "WebSockets / HTTPS")
+
+Rel(cloud_sync, state_cache, "Записывает команды из облака")
+Rel(cloud_sync, local_db, "Синхронизирует правила автоматизации", "HTTPS / JSON")
+
+Rel(local_web_server, local_db, "Записывает начальные настройки и токен авторизации")
+
+@enduml

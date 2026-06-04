@@ -1,0 +1,35 @@
+@startuml
+!include ../c4/C4_Component.puml
+
+title "Device Registry Service — Диаграмма компонентов (C4 Component Diagram)"
+
+Container(api_gateway, "API Gateway", "Kong / Nginx", "Маршрутизирует внешние запросы.")
+Container(automation_service, "Automation Service", "Go", "Запрашивает связи датчиков для сценариев.")
+ContainerDb(device_db, "Device Database", "PostgreSQL", "Хранит справочник хабов, устройств и их привязок.")
+Container(kafka, "Apache Kafka (Message Broker / Event Bus)", "Kafka", "Единая шина событий для телеметрии, команд и системных уведомлений.")
+
+Container_Boundary(device_service_boundary, "Device Registry & Inventory Service") {
+    Component(http_handler, "Device HTTP Handler", "Gin (Go)", "Обрабатывает REST API запросы от пользователей (регистрация устройств, привязка к комнатам).")
+    Component(grpc_handler, "Device gRPC Handler", "protobuf / gRPC", "Обрабатывает gRPC запросы от внутренних сервисов (авторизация устройств, проверка связей).")
+    
+    Component(device_manager, "Device Manager (Core)", "Go Domain Logic", "Бизнес-логика регистрации приборов, проверки совместимости партнерских протоколов, привязки к хабам.")
+    Component(event_publisher, "Kafka Event Publisher", "Go Component", "Публикует события изменения состава устройств (DeviceRegistered, DeviceUnregistered) в Kafka.")
+    
+    Component(db_client, "DB Client", "pgxpool (Go)", "Выполняет SQL-запросы к Device Database.")
+}
+
+' Связи внешних контейнеров с компонентами
+Rel(api_gateway, http_handler, "Запросы /api/v1/devices/*", "HTTP/JSON")
+Rel(automation_service, grpc_handler, "Запрос связей устройств пользователя", "gRPC")
+
+' Внутренние связи сервиса
+Rel(http_handler, device_manager, "Вызывает операции CRUD")
+Rel(grpc_handler, device_manager, "Запрашивает данные об устройствах")
+
+Rel(device_manager, db_client, "Читает/Пишет метаданные")
+Rel(device_manager, event_publisher, "Инициирует публикацию события при изменении состава устройств")
+
+Rel(db_client, device_db, "Выполняет SQL-запросы", "pgxpool")
+Rel(event_publisher, kafka, "Публикует события изменений конфигурации в топик 'device-events'", "Kafka Protocol")
+
+@enduml

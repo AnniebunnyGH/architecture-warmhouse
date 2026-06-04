@@ -1,0 +1,102 @@
+@startuml
+!include c4/C4_Container.puml
+
+title "To-Be: Диаграмма контейнеров (C4 Container Diagram)"
+
+System_Ext(user_app, "Веб-интерфейс / Мобильное приложение", "Позволяет пользователям управлять устройствами, настраивать сценарии и смотреть видео.")
+
+System_Boundary(home_boundary, "Локальный контур умного дома (Edge)") {
+    Container(local_hub, "Локальный Хаб (Matter Controller)", "Go/Python, Embedded", "Управляет локальными датчиками, выполняет сценарии автономно, синхронизируется с облаком.")
+    Container(direct_device, "Прямое Wi-Fi/GSM устройство", "ESP32/Firmware", "Отопительный модуль старого типа. Общается напрямую с облаком.")
+    Container(local_sensor, "Локальный Zigbee/Matter датчик", "Zigbee/Thread", "Датчик температуры или реле света.")
+    
+    Rel(local_hub, local_sensor, "Опрашивает и управляет", "Zigbee / Thread / Matter")
+}
+
+System_Boundary(cloud_boundary, "Облачная платформа «Тёплый дом» (SaaS)") {
+    Container(api_gateway, "API Gateway", "Kong / Nginx", "Маршрутизирует внешние запросы пользователей, авторизует (JWT).")
+    
+    Container(iot_gateway, "IoT Gateway Service", "Go", "Точка входа для устройств. Принимает телеметрию, держит WebSocket-соединения для отправки команд.")
+    
+    Container(kafka, "Apache Kafka (Message Broker / Event Bus)", "Kafka", "Единая шина событий для телеметрии, команд и системных уведомлений.")
+    
+    ContainerDb(redis_cache, "Redis Cache", "Redis", "Кэширует текущее состояние датчиков и сессии пользователей.")
+    
+    ' Микросервисы платформы и их БД
+    Container(user_service, "User & Billing Service", "Go", "Управление пользователями, авторизацией и SaaS-подписками.")
+    ContainerDb(user_db, "User DB", "PostgreSQL", "Данные пользователей и биллинга.")
+    
+    Container(device_service, "Device Registry Service", "Go", "Ведет реестр хабов и датчиков, привязывает их к пользователям.")
+    ContainerDb(device_db, "Device DB", "PostgreSQL", "Справочник устройств и связей.")
+    
+    Container(telemetry_service, "Telemetry & History Service", "Go", "Чтение сырой телеметрии из Kafka, запись истории в БД и обновление кэша Redis.")
+    ContainerDb(telemetry_db, "Telemetry DB", "TimescaleDB", "История показаний приборов.")
+    
+    Container(automation_service, "Automation & Rules Service", "Go", "Создание сценариев автоматизации, компиляция и синхронизация их с хабами.")
+    ContainerDb(rules_db, "Rules DB", "PostgreSQL", "Пользовательские сценарии.")
+    
+    ' Доменные управляющие микросервисы и их БД
+    Container(heating_service, "Heating Control Service", "Go", "Бизнес-логика климатического контроля для Direct-to-Cloud приборов.")
+    ContainerDb(heating_db, "Heating DB", "PostgreSQL", "Климатические уставки и настройки.")
+    
+    Container(lighting_service, "Lighting Control Service", "Go", "Управление освещением, диммированием и сценариями освещения.")
+    ContainerDb(lighting_db, "Lighting DB", "PostgreSQL", "Настройки освещения и группы ламп.")
+    
+    Container(access_service, "Access Control Service", "Go", "Управление автоматическими воротами, замками и ведение журнала доступа.")
+    ContainerDb(access_db, "Access DB", "PostgreSQL", "Журнал доступа, статусы и ключи.")
+    
+    Container(surveillance_service, "Surveillance Service", "Go / WebRTC", "Координирует WebRTC-стриминг (сигналинг), дает ссылки на видеоархив.")
+    ContainerDb(video_storage, "Cloud Object Storage", "MinIO / S3", "Хранит архивные записи видео.")
+}
+
+' Взаимодействие клиентов с облаком
+Rel(user_app, api_gateway, "Управляет приборами, настраивает сценарии, запрашивает стриминг", "HTTPS / JSON")
+Rel(local_hub, api_gateway, "Синхронизирует сценарии", "HTTPS / JSON")
+
+' Подключение устройств к IoT Gateway
+Rel(local_hub, iot_gateway, "Отправляет телеметрию, ждет команды", "WebSockets / HTTPS")
+Rel(direct_device, iot_gateway, "Отправляет телеметрию, ждет команды", "WebSockets / HTTPS")
+
+' IoT Gateway -> Kafka
+Rel(iot_gateway, kafka, "Публикует сырую телеметрию в топик 'telemetry-raw'", "TCP / Kafka Protocol")
+Rel(kafka, iot_gateway, "Читает команды из топика 'device-commands' для отправки на приборы", "TCP / Kafka Protocol")
+
+' API Gateway -> Сервисы
+Rel(api_gateway, user_service, "Перенаправляет запросы /auth, /billing", "gRPC / HTTP")
+Rel(api_gateway, device_service, "Перенаправляет запросы /devices", "gRPC / HTTP")
+Rel(api_gateway, automation_service, "Перенаправляет запросы /rules", "gRPC / HTTP")
+Rel(api_gateway, surveillance_service, "Перенаправляет запросы /video", "gRPC / HTTP")
+Rel(api_gateway, heating_service, "Перенаправляет запросы /heating", "gRPC / HTTP")
+Rel(api_gateway, lighting_service, "Перенаправляет запросы /lighting", "gRPC / HTTP")
+Rel(api_gateway, access_service, "Перенаправляет запросы /access", "gRPC / HTTP")
+
+' Связь Kafka с микросервисами
+Rel(kafka, telemetry_service, "Доставляет поток телеметрии", "Kafka Protocol")
+Rel(kafka, automation_service, "Доставляет события для облачной автоматизации", "Kafka Protocol")
+Rel(kafka, heating_service, "Доставляет события изменения температуры", "Kafka Protocol")
+Rel(kafka, lighting_service, "Доставляет события освещения", "Kafka Protocol")
+Rel(kafka, access_service, "Доставляет события ворот/замков", "Kafka Protocol")
+
+' Сервисы -> База данных (Database per Service)
+Rel(user_service, user_db, "Запись/Чтение", "SQL")
+Rel(device_service, device_db, "Запись/Чтение", "SQL")
+Rel(automation_service, rules_db, "Запись/Чтение", "SQL")
+Rel(telemetry_service, telemetry_db, "Сохраняет историю", "SQL / NoSQL")
+Rel(heating_service, heating_db, "Запись/Чтение", "SQL")
+Rel(lighting_service, lighting_db, "Запись/Чтение", "SQL")
+Rel(access_service, access_db, "Запись/Чтение", "SQL")
+
+' Кэш и медиа-хранилище
+Rel(telemetry_service, redis_cache, "Пишет текущие значения приборов", "Redis Protocol")
+Rel(surveillance_service, video_storage, "Сохраняет видеоклипы", "S3 API")
+
+' Облачные команды отправляются в Kafka
+Rel(automation_service, kafka, "Публикует команды в топик 'device-commands'", "Kafka Protocol")
+Rel(heating_service, kafka, "Публикует команды в топик 'device-commands'", "Kafka Protocol")
+Rel(lighting_service, kafka, "Публикует команды в топик 'device-commands'", "Kafka Protocol")
+Rel(access_service, kafka, "Публикует команды в топик 'device-commands'", "Kafka Protocol")
+
+' gRPC коммуникация
+Rel(automation_service, device_service, "Запрашивает связи приборов", "gRPC")
+
+@enduml
