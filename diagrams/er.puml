@@ -1,0 +1,169 @@
+@startuml
+skinparam roundcorner 5
+
+title "Target DB: Полная диаграмма сущностей и связей (ER Diagram)"
+
+package "User & Billing DB" as pkg_user #F5F5DC {
+  entity "User" as user {
+    * id : SERIAL <<PK>>
+    --
+    * email : VARCHAR(255)
+    * password_hash : VARCHAR(255)
+    * role : VARCHAR(50)
+    * created_at : TIMESTAMP
+  }
+
+  entity "Subscription" as subscription {
+    * id : SERIAL <<PK>>
+    --
+    * user_id : INTEGER <<FK>>
+    * tier : VARCHAR(50)
+    * price : DECIMAL
+    * status : VARCHAR(50)
+    * start_date : TIMESTAMP
+    * end_date : TIMESTAMP
+  }
+}
+
+package "Device Registry DB" as pkg_registry #E8F5E9 {
+  entity "House" as house {
+    * id : SERIAL <<PK>>
+    --
+    * user_id : INTEGER <<FK>>
+    * name : VARCHAR(100)
+    * address : VARCHAR(255)
+    * created_at : TIMESTAMP
+  }
+
+  entity "Module" as module {
+    * id : SERIAL <<PK>>
+    --
+    * house_id : INTEGER <<FK>>
+    * serial_number : VARCHAR(100) <<UNIQUE>>
+    * status : VARCHAR(50)
+    * firmware_version : VARCHAR(50)
+    * created_at : TIMESTAMP
+  }
+
+  entity "DeviceType" as device_type {
+    * id : SERIAL <<PK>>
+    --
+    * name : VARCHAR(50)
+    * description : VARCHAR(255)
+  }
+
+  entity "Device" as device {
+    * id : SERIAL <<PK>>
+    --
+    * type_id : INTEGER <<FK>>
+    * house_id : INTEGER <<FK>>
+    * module_id : INTEGER <<FK>> <<Nullable>>
+    * serial_number : VARCHAR(100) <<UNIQUE>>
+    * name : VARCHAR(100)
+    * status : VARCHAR(50)
+    * created_at : TIMESTAMP
+  }
+}
+
+package "Telemetry DB" as pkg_telemetry #E3F2FD {
+  entity "TelemetryData" as telemetry_data {
+    * device_id : INTEGER <<FK>>
+    * timestamp : TIMESTAMP <<PK>>
+    --
+    * value : DOUBLE PRECISION
+    * unit : VARCHAR(20)
+  }
+}
+
+package "Surveillance DB" as pkg_video #FFF3E0 {
+  entity "VideoRecording" as video_recording {
+    * id : SERIAL <<PK>>
+    --
+    * device_id : INTEGER <<FK>>
+    * s3_url : VARCHAR(512)
+    * triggered_at : TIMESTAMP
+    * duration_sec : INTEGER
+    * status : VARCHAR(50)
+  }
+}
+
+package "Access Control DB" as pkg_access #FCE4EC {
+  entity "AccessKey" as access_key {
+    * id : SERIAL <<PK>>
+    --
+    * device_id : INTEGER <<FK>>
+    * user_id : INTEGER <<FK>>
+    * token_hash : VARCHAR(255)
+    * is_active : BOOLEAN
+    * expires_at : TIMESTAMP
+  }
+
+  entity "AccessLog" as access_log {
+    * id : SERIAL <<PK>>
+    --
+    * device_id : INTEGER <<FK>>
+    * key_id : INTEGER <<FK>> <<Nullable>>
+    * user_id : INTEGER <<FK>> <<Nullable>>
+    * event_type : VARCHAR(50)
+    * timestamp : TIMESTAMP
+  }
+}
+
+package "Automation Rules DB" as pkg_rules #F3E5F5 {
+  entity "Rule" as rule {
+    * id : SERIAL <<PK>>
+    --
+    * house_id : INTEGER <<FK>>
+    * name : VARCHAR(100)
+    * is_active : BOOLEAN
+    * trigger_condition : JSONB
+    * actions : JSONB
+    * created_at : TIMESTAMP
+  }
+}
+
+package "Heating & Climate DB" as pkg_heating #FFEBEE {
+  entity "ClimateProfile" as climate_profile {
+    * id : SERIAL <<PK>>
+    --
+    * house_id : INTEGER <<FK>>
+    * name : VARCHAR(100)
+    * target_temp : DOUBLE PRECISION
+    * mode : VARCHAR(50)
+  }
+
+  entity "HeatingZone" as heating_zone {
+    * id : SERIAL <<PK>>
+    --
+    * house_id : INTEGER <<FK>>
+    * profile_id : INTEGER <<FK>>
+    * temp_sensor_id : INTEGER <<FK>>
+    * heating_device_id : INTEGER <<FK>>
+    * name : VARCHAR(100)
+  }
+}
+
+' === СВЯЗИ ===
+user ||--o{ subscription : "pays"
+user ||--o{ house : "owns"
+house ||--o{ module : "contains"
+house ||--o{ device : "contains"
+house ||--o{ rule : "configures"
+house ||--o{ climate_profile : "defines"
+house ||--o{ heating_zone : "groups"
+
+module ||--o{ device : "manages"
+device_type ||--o{ device : "defines"
+
+device ||--o{ telemetry_data : "generates"
+device ||--o{ video_recording : "records"
+device ||--o{ access_key : "binds"
+device ||--o{ access_log : "logs events"
+device ||--o{ heating_zone : "acts as sensor/heater"
+
+user ||--o{ access_key : "holds"
+user ||--o{ access_log : "triggers"
+access_key ||--o{ access_log : "authenticates"
+climate_profile ||--o{ heating_zone : "applies to"
+
+@enduml
