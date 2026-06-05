@@ -326,57 +326,41 @@
 
 # Задание 5. Работа с docker и docker-compose
 
-Перейдите в apps.
+В ходе выполнения задания было разработано решение для интеграционного тестирования монолита `smart_home` с внешней базой данных PostgreSQL и mock-сервисом показаний температуры.
 
-Там находится приложение-монолит для работы с датчиками температуры. В README.md описано как запустить решение.
+### 1. Архитектура решения и компоненты
 
-Вам нужно:
+*   **`postgres` (База данных):**
+    *   Используется официальный образ `postgres:16-alpine`.
+    *   При запуске автоматически инициализирует схему данных и первоначальные настройки таблиц с помощью скрипта `./smart_home/init.sql`, примонтированного в директорию `/docker-entrypoint-initdb.d/init.sql`.
+    *   Настроен `healthcheck` с использованием утилиты `pg_isready` (проверяется готовность БД `smarthome` и пользователя `postgres`), чтобы зависимые контейнеры запускались только после полной готовности СУБД.
+*   **`temperature-api` (Mock-сервис температурных датчиков):**
+    *   Реализован на **TypeScript** и фреймворке **NestJS**.
+    *   Содержит раздельные методы в `TemperatureService` для обработки логики:
+        *   `getTemperatureByLocation(location: string)` — маппирует имя локации в ID датчика (`Living Room` ↔ `1`, `Bedroom` ↔ `2`, `Kitchen` ↔ `3`) и генерирует случайную температуру.
+        *   `getTemperatureBySensorId(sensorId: string)` — маппирует ID датчика обратно в локацию и генерирует данные.
+        *   Возвращаемые значения температуры лежат в диапазоне от `15.0°C` до `28.0°C` с точностью до 1 знака после запятой.
+    *   Поддерживает ручки:
+        *   `GET /health` — для проверки работоспособности сервиса.
+        *   `GET /temperature` — принимает query-параметры `location`, `sensor_id` или `sensorId`.
+        *   `GET /temperature/:sensorID` — принимает идентификатор в пути.
+    *   Упакован в оптимизированный многоэтапный **Dockerfile** (Multi-stage build) на базе `node:20-alpine`, что позволило скомпилировать TypeScript код на этапе сборки и исключить лишние `devDependencies` в итоговом образе для минимизации его размера.
+*   **`app` (Монолитное Go-приложение):**
+    *   Контейнеризован с помощью предоставленного Dockerfile.
+    *   Связан переменными окружения с СУБД (`DATABASE_URL`) и mock-сервисом (`TEMPERATURE_API_URL`).
+    *   Запускается только после готовности СУБД (настроен `depends_on` с условием `service_healthy`).
 
-1) сделать простое приложение temperature-api на любом удобном для вас языке программирования, которое при запросе /temperature?location= будет отдавать рандомное значение температуры.
+Все три контейнера объединены в общую изолированную сеть `smarthome-network` типа `bridge`.
 
-Locations - название комнаты, sensorId - идентификатор названия комнаты
+---
 
-```
-	// If no location is provided, use a default based on sensor ID
-	if location == "" {
-		switch sensorID {
-		case "1":
-			location = "Living Room"
-		case "2":
-			location = "Bedroom"
-		case "3":
-			location = "Kitchen"
-		default:
-			location = "Unknown"
-		}
-	}
+### 2. Запуск и проверка работоспособности
 
-	// If no sensor ID is provided, generate one based on location
-	if sensorID == "" {
-		switch location {
-		case "Living Room":
-			sensorID = "1"
-		case "Bedroom":
-			sensorID = "2"
-		case "Kitchen":
-			sensorID = "3"
-		default:
-			sensorID = "0"
-		}
-	}
-```
-
-2) Приложение следует упаковать в Docker и добавить в docker-compose. Порт по умолчанию должен быть 8081
-
-3) Кроме того для smart_home приложения требуется база данных - добавьте в docker-compose файл настройки для запуска postgres с указанием скрипта инициализации ./smart_home/init.sql
-
-Для проверки можно использовать Postman коллекцию smarthome-api.postman_collection.json и вызвать:
-
-- Create Sensor
-- Get All Sensors
-
-Должно при каждом вызове отображаться разное значение температуры
-
-Ревьюер будет проверять точно так же.
-
-
+1.  **Запуск контейнеров:**
+    ```bash
+    cd apps
+    docker compose up -d --build
+    ```
+2.  **Проверка работы:**
+    При вызове API монолита (`POST /api/v1/sensors`) для регистрации датчиков в комнатах `Living Room` и `Bedroom`, а затем чтении списка устройств (`GET /api/v1/sensors`), монолит отправляет HTTP-запросы в контейнер `temperature-api`, возвращая актуальные динамические случайные показания приборов:
+    *   `GET http://localhost:8080/api/v1/sensors` -> возвращает JSON со статусом `"active"` и случайным значением `value` от `15.0` до `28.0`.
