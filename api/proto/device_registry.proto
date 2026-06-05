@@ -1,0 +1,94 @@
+syntax = "proto3";
+
+package warmhouse.registry.v1;
+
+option go_package = "github.com/warmhouse/proto/registry/v1";
+
+// ═══════════════════════════════════════════════════
+//  Device Registry Service — gRPC API
+//  Синхронный inter-service API для запросов,
+//  требующих немедленного ответа.
+// ═══════════════════════════════════════════════════
+
+service DeviceRegistryService {
+  // Получить информацию об устройстве по ID.
+  // Используется: Telemetry, Heating, Automation — для обогащения событий.
+  rpc GetDevice (GetDeviceRequest) returns (DeviceInfo);
+
+  // Получить список устройств дома.
+  // Используется: Heating — для построения списка зон.
+  rpc ListHouseDevices (ListHouseDevicesRequest) returns (ListHouseDevicesResponse);
+
+  // Проверить лимит устройств для пользователя.
+  // Используется: API Gateway — при регистрации нового устройства.
+  rpc CheckDeviceQuota (CheckDeviceQuotaRequest) returns (CheckDeviceQuotaResponse);
+}
+
+// ─── GetDevice ───
+
+message GetDeviceRequest {
+  int32 device_id = 1;
+}
+
+message DeviceInfo {
+  int32 id = 1;
+  string serial_number = 2;
+  DeviceType type = 3;
+  string name = 4;
+  int32 house_id = 5;
+  optional int32 module_id = 6;  // null для direct-to-cloud
+  DeviceStatus status = 7;
+  string firmware_version = 8;
+  string created_at = 9;  // ISO 8601
+}
+
+// ─── ListHouseDevices ───
+
+message ListHouseDevicesRequest {
+  int32 house_id = 1;
+  optional DeviceType type_filter = 2;  // фильтр по типу
+  optional DeviceStatus status_filter = 3;  // фильтр по статусу
+  int32 page_size = 4;  // макс. 100
+  string page_token = 5;  // курсор для пагинации
+}
+
+message ListHouseDevicesResponse {
+  repeated DeviceInfo devices = 1;
+  string next_page_token = 2;
+  int32 total_count = 3;
+}
+
+// ─── CheckDeviceQuota ───
+
+message CheckDeviceQuotaRequest {
+  int32 user_id = 1;
+}
+
+message CheckDeviceQuotaResponse {
+  int32 user_id = 1;
+  int32 current_count = 2;   // текущее кол-во устройств
+  int32 max_allowed = 3;     // максимум по подписке
+  bool quota_exceeded = 4;   // true если current >= max
+  string subscription_tier = 5;
+}
+
+// ─── Enums ───
+
+enum DeviceType {
+  DEVICE_TYPE_UNSPECIFIED = 0;
+  DEVICE_TYPE_THERMOMETER = 1;
+  DEVICE_TYPE_RELAY = 2;
+  DEVICE_TYPE_CAMERA = 3;
+  DEVICE_TYPE_LOCK = 4;
+  DEVICE_TYPE_GATE = 5;
+  DEVICE_TYPE_LIGHT = 6;
+  DEVICE_TYPE_MOTION_SENSOR = 7;
+}
+
+enum DeviceStatus {
+  DEVICE_STATUS_UNSPECIFIED = 0;
+  DEVICE_STATUS_ACTIVE = 1;
+  DEVICE_STATUS_INACTIVE = 2;
+  DEVICE_STATUS_MAINTENANCE = 3;
+  DEVICE_STATUS_DECOMMISSIONED = 4;
+}

@@ -1,0 +1,218 @@
+asyncapi: 2.6.0
+info:
+  title: Device Registry Service — Async API
+  version: 1.0.0
+  description: |
+    Асинхронный контракт микросервиса Device Registry (Реестр устройств).
+    Сервис отвечает за регистрацию датчиков и хабов, привязку их к домам,
+    а также отслеживание лимитов на количество устройств на основе тарифного плана пользователя.
+
+servers:
+  production:
+    url: kafka.warmhouse.internal:9092
+    protocol: kafka
+    description: Production Kafka кластер
+  staging:
+    url: kafka-staging.warmhouse.internal:9092
+    protocol: kafka
+    description: Staging-окружение
+
+defaultContentType: application/json
+
+channels:
+  device.events:
+    description: |
+      События жизненного цикла устройств, генерируемые сервисом реестра.
+      
+      **Партиция по:** **deviceId**
+      **Retention:** 30 дней
+    publish:
+      operationId: publishDeviceEvent
+      summary: Публикация событий жизненного цикла приборов
+      message:
+        oneOf:
+          - $ref: "#/components/messages/DeviceRegistered"
+          - $ref: "#/components/messages/DeviceDecommissioned"
+          - $ref: "#/components/messages/FirmwareUpdated"
+          - $ref: "#/components/messages/HubStatusChanged"
+
+  user.events:
+    description: |
+      События изменения статуса подписок пользователей (генератор: User & Billing).
+      Сервис реестра слушает этот топик для своевременного изменения лимитов устройств.
+      
+      **Партиция по:** **userId**
+      **Retention:** 90 дней
+    subscribe:
+      operationId: consumeUserEvent
+      summary: Подписка на события подписки пользователей
+      message:
+        oneOf:
+          - $ref: "#/components/messages/SubscriptionActivated"
+          - $ref: "#/components/messages/SubscriptionExpired"
+
+components:
+  messages:
+    DeviceRegistered:
+      name: DeviceRegistered
+      title: Устройство зарегистрировано
+      summary: Новое устройство добавлено в реестр и привязано к дому
+      contentType: application/json
+      headers:
+        type: object
+        properties:
+          ce_type:
+            type: string
+            const: io.warmhouse.device.registered
+          ce_source:
+            type: string
+            example: /services/device-registry
+          ce_id:
+            type: string
+            format: uuid
+          ce_time:
+            type: string
+            format: date-time
+      payload:
+        type: object
+        required: [deviceId, houseId, serialNumber, deviceType, occurredAt]
+        properties:
+          deviceId:
+            type: integer
+            description: ID зарегистрированного устройства
+            example: 256
+          houseId:
+            type: integer
+            description: ID дома
+            example: 5
+          serialNumber:
+            type: string
+            example: "TH-2024-000142"
+          deviceType:
+            type: string
+            enum: [THERMOMETER, RELAY, CAMERA, LOCK, GATE, LIGHT, MOTION_SENSOR]
+            example: "THERMOMETER"
+          moduleId:
+            type: integer
+            nullable: true
+            description: ID хаба (null для direct-to-cloud)
+            example: 12
+          occurredAt:
+            type: string
+            format: date-time
+            example: "2024-06-04T12:00:00Z"
+
+    DeviceDecommissioned:
+      name: DeviceDecommissioned
+      title: Устройство выведено из эксплуатации
+      contentType: application/json
+      payload:
+        type: object
+        required: [deviceId, houseId, reason, occurredAt]
+        properties:
+          deviceId:
+            type: integer
+            example: 256
+          houseId:
+            type: integer
+            example: 5
+          reason:
+            type: string
+            example: "Заменено на новую модель"
+          occurredAt:
+            type: string
+            format: date-time
+
+    FirmwareUpdated:
+      name: FirmwareUpdated
+      title: Прошивка устройства обновлена
+      contentType: application/json
+      payload:
+        type: object
+        required: [deviceId, oldVersion, newVersion, occurredAt]
+        properties:
+          deviceId:
+            type: integer
+            example: 256
+          oldVersion:
+            type: string
+            example: "2.4.1"
+          newVersion:
+            type: string
+            example: "2.5.0"
+          occurredAt:
+            type: string
+            format: date-time
+
+    HubStatusChanged:
+      name: HubStatusChanged
+      title: Статус хаба изменился
+      contentType: application/json
+      payload:
+        type: object
+        required: [moduleId, houseId, newStatus, occurredAt]
+        properties:
+          moduleId:
+            type: integer
+            example: 12
+          houseId:
+            type: integer
+            example: 5
+          newStatus:
+            type: string
+            enum: [ONLINE, OFFLINE]
+            example: "OFFLINE"
+          affectedDeviceIds:
+            type: array
+            items:
+              type: integer
+            description: ID устройств, затронутых сменой статуса хаба
+            example: [256, 257, 258]
+          occurredAt:
+            type: string
+            format: date-time
+
+    SubscriptionActivated:
+      name: SubscriptionActivated
+      title: Подписка активирована
+      contentType: application/json
+      payload:
+        type: object
+        required: [userId, tier, deviceQuota, occurredAt]
+        properties:
+          userId:
+            type: integer
+            example: 1
+          tier:
+            type: string
+            enum: [FREE, BASIC, PREMIUM, ENTERPRISE]
+            example: "PREMIUM"
+          deviceQuota:
+            type: integer
+            description: Максимально допустимое число устройств
+            example: 50
+          occurredAt:
+            type: string
+            format: date-time
+
+    SubscriptionExpired:
+      name: SubscriptionExpired
+      title: Подписка истекла
+      contentType: application/json
+      payload:
+        type: object
+        required: [userId, previousTier, occurredAt]
+        properties:
+          userId:
+            type: integer
+            example: 1
+          previousTier:
+            type: string
+            example: "PREMIUM"
+          gracePeriodEndsAt:
+            type: string
+            format: date-time
+            description: Дата окончания льготного периода
+          occurredAt:
+            type: string
+            format: date-time

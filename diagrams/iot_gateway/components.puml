@@ -1,0 +1,38 @@
+@startuml
+!include ../c4/C4_Component.puml
+
+title "IoT Gateway Service — Диаграмма компонентов (C4 Component Diagram)"
+
+Container(device_registry, "Device Registry Service", "Go", "Предоставляет gRPC API для авторизации устройств.")
+Container(kafka, "Apache Kafka", "Kafka", "Единая шина событий умного дома.")
+Container_Ext(local_hub, "Локальный Хаб / Прямое устройство", "Edge Container", "Отправляет телеметрию и ждет команды.")
+
+Container_Boundary(iot_gateway_boundary, "IoT Gateway Service") {
+    Component(conn_listener, "Connection Listener", "Go Net/http", "Принимает входящие WebSocket и HTTPS соединения от устройств.")
+    Component(session_mgr, "Session Manager", "Go Sync Map", "Хранит активные WebSocket-соединения, отображая ID устройств на сетевые сокеты.")
+    Component(dev_auth, "Device Authenticator", "Go Component", "Проверяет токены/сертификаты приборов при подключении через gRPC к Device Registry.")
+    
+    Component(telemetry_decoder, "Telemetry Decoder", "Go Parser", "Декодирует входящие сырые бинарные или JSON данные устройств в единый формат.")
+    Component(kafka_producer, "Kafka Telemetry Producer", "Go Confluent-Kafka", "Публикует обработанные показания датчиков в топик 'telemetry-raw'.")
+    
+    Component(kafka_consumer, "Kafka Command Consumer", "Go Confluent-Kafka", "Слушает топик 'device-commands' для отправки команд на устройства.")
+    Component(command_dispatcher, "Command Dispatcher", "Go Component", "Находит нужное активное соединение в Session Manager и отправляет команду по сокету.")
+}
+
+' Связи устройств с гейтвеем
+Rel(local_hub, conn_listener, "Устанавливает соединение / шлет показания", "WebSockets / HTTPS")
+
+' Внутренние связи
+Rel(conn_listener, dev_auth, "Запрашивает валидацию credentials")
+Rel(dev_auth, device_registry, "Проверяет прибор / токен", "gRPC")
+
+Rel(conn_listener, session_mgr, "Регистрирует активную сессию при успехе")
+Rel(conn_listener, telemetry_decoder, "Передает сырые данные телеметрии")
+Rel(telemetry_decoder, kafka_producer, "Передает структурированные события")
+Rel(kafka_producer, kafka, "Пишет в 'telemetry-raw'", "Kafka Protocol")
+
+Rel(kafka, kafka_consumer, "Доставляет команды для устройств", "Kafka Protocol")
+Rel(kafka_consumer, command_dispatcher, "Передает команду на отправку")
+Rel(command_dispatcher, session_mgr, "Получает активный сокет и пишет команду напрямую в него")
+
+@enduml

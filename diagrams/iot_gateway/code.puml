@@ -1,0 +1,58 @@
+@startuml
+skinparam packageStyle rect
+skinparam roundcorner 5
+
+title "IoT Gateway Service — Структура кода (C4 Code Diagram)"
+
+package "cmd/iot-gateway" as cmd_iot_gw {
+  class "main.go" as main
+}
+
+package internal {
+  package config {
+    class "Config" as config
+  }
+
+  package "server/websocket" as server_websocket {
+    class "WsServer" as ws_server
+    class "Connection" as conn_wrapper
+  }
+
+  package registry {
+    class "SessionManager" as session_manager
+  }
+
+  package auth {
+    class "DeviceAuthenticator" as auth_client
+  }
+
+  package parser {
+    class "TelemetryDecoder" as decoder
+  }
+
+  package kafka {
+    class "KafkaProducer" as kafka_producer
+    class "KafkaConsumer" as kafka_consumer
+  }
+
+  package dispatcher {
+    class "CommandDispatcher" as dispatcher
+  }
+}
+
+main --> config : "loads"
+main --> ws_server : "initializes and starts"
+main --> kafka_consumer : "starts loop"
+
+ws_server --> conn_wrapper : "creates per client connection"
+conn_wrapper --> auth_client : "authenticates device (via gRPC)"
+conn_wrapper --> session_manager : "registers active socket"
+conn_wrapper --> decoder : "passes raw incoming bytes"
+
+decoder --> kafka_producer : "sends parsed telemetry"
+kafka_producer --> kafka_producer : "writes to Kafka"
+
+kafka_consumer --> dispatcher : "forwards commands"
+dispatcher --> session_manager : "finds connection and writes directly to socket"
+
+@enduml

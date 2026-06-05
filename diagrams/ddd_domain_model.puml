@@ -1,0 +1,562 @@
+@startuml
+skinparam roundcorner 5
+skinparam packageStyle rectangle
+skinparam classFontSize 11
+skinparam defaultFontSize 11
+
+skinparam class {
+  BackgroundColor<<AR>> #C8E6C9
+  BorderColor<<AR>> #2E7D32
+  BackgroundColor<<Entity>> #FFF9C4
+  BorderColor<<Entity>> #F57F17
+  BackgroundColor<<VO>> #BBDEFB
+  BorderColor<<VO>> #1565C0
+  BackgroundColor<<Event>> #FFCDD2
+  BorderColor<<Event>> #C62828
+}
+
+title "WarmHouse — DDD Tactical Domain Model"
+caption Зелёный = Aggregate Root, Жёлтый = Entity, Синий = Value Object, Красный = Domain Event
+
+' ============================================================
+'  DEVICE REGISTRY CONTEXT
+' ============================================================
+package "Device Registry Context" as ctx_registry #E8F5E9 {
+
+  class House <<AR>> {
+    id : HouseId
+    ownerId : UserId
+    name : String
+    address : Address
+    ==
+    <b>Invariants:</b>
+    - Лимиты на число устройств проверяются через Domain Service
+  }
+
+  class Device <<AR>> {
+    id : DeviceId
+    houseId : HouseId
+    serialNumber : SerialNumber
+    type : DeviceType
+    status : DeviceStatus
+    moduleId : ModuleId?
+    firmware : FirmwareVersion
+    ==
+    activate()
+    deactivate()
+    pairWithModule(moduleId)
+    unpairFromModule()
+    updateFirmware(version)
+    ==
+    <b>Invariants:</b>
+    - Нельзя деактивировать, если привязан к HeatingZone
+  }
+
+  class Module <<AR>> {
+    id : ModuleId
+    houseId : HouseId
+    serialNumber : SerialNumber
+    firmware : FirmwareVersion
+    status : ModuleStatus
+    ==
+    goOnline()
+    goOffline()
+  }
+
+  class DeviceRegistrationService <<Domain Service>> {
+    + registerDevice(houseId, serial, type, quotaChecker) : Device
+    ==
+    <b>Invariants:</b>
+    - Максимальное количество устройств по тарифу
+  }
+
+  class SerialNumber <<VO>> {
+    value : String
+    --
+    {static} create(raw) : SerialNumber
+    {static} validate(raw) : Boolean
+  }
+
+  class FirmwareVersion <<VO>> {
+    major : Int
+    minor : Int
+    patch : Int
+    --
+    isNewerThan(other) : Boolean
+  }
+
+  class Address <<VO>> {
+    country : String
+    city : String
+    street : String
+    zip : String
+  }
+
+  enum DeviceStatus <<VO>> {
+    ACTIVE
+    INACTIVE
+    MAINTENANCE
+    DECOMMISSIONED
+  }
+
+  enum DeviceType <<VO>> {
+    THERMOMETER
+    RELAY
+    CAMERA
+    LOCK
+    GATE
+    LIGHT
+    MOTION_SENSOR
+  }
+
+  class DeviceRegistered <<Event>> {
+    deviceId : DeviceId
+    houseId : HouseId
+    serialNumber : String
+    type : DeviceType
+    occurredAt : Instant
+  }
+
+  class DeviceDecommissioned <<Event>> {
+    deviceId : DeviceId
+    houseId : HouseId
+    reason : String
+    occurredAt : Instant
+  }
+
+  class FirmwareUpdated <<Event>> {
+    deviceId : DeviceId
+    oldVersion : FirmwareVersion
+    newVersion : FirmwareVersion
+    occurredAt : Instant
+  }
+
+  class HubStatusChanged <<Event>> {
+    moduleId : ModuleId
+    houseId : HouseId
+    newStatus : ModuleStatus
+    occurredAt : Instant
+  }
+
+  House "1" o-- "*" Device : "belongs to"
+  House "1" o-- "*" Module : "belongs to"
+  Module "1" o-- "*" Device : "manages (referenced by ID)"
+  DeviceRegistrationService ..> Device : "creates"
+  DeviceRegistrationService ..> House : "checks quota"
+  Device --> SerialNumber
+  Device --> DeviceStatus
+  Device --> DeviceType
+  Device --> FirmwareVersion
+  Module --> SerialNumber
+  Module --> FirmwareVersion
+  House --> Address
+}
+
+' ============================================================
+'  TELEMETRY CONTEXT
+' ============================================================
+package "Telemetry Context" as ctx_telemetry #E3F2FD {
+
+  class DeviceTelemetry <<AR>> {
+    deviceId : DeviceId
+    cachedLatest : Measurement
+    thresholds : List<Threshold>
+    ==
+    record(measurement) : void
+    getLatest() : Measurement
+    getHistory(from, to) : List<Measurement>
+    defineThreshold(condition)
+    ==
+    <b>Storage:</b>
+    - TimescaleDB: история измерений
+    - Redis: кэш последнего значения
+  }
+
+  class Measurement <<VO>> {
+    value : Double
+    unit : MeasurementUnit
+    timestamp : Instant
+    --
+    isAbove(threshold) : Boolean
+    isBelow(threshold) : Boolean
+  }
+
+  class Threshold <<VO>> {
+    metric : String
+    operator : {GT, LT, EQ}
+    value : Double
+    --
+    evaluate(measurement) : Boolean
+  }
+
+  enum MeasurementUnit <<VO>> {
+    CELSIUS
+    PERCENT
+    LUX
+    BOOLEAN
+    WATT
+  }
+
+  class MeasurementRecorded <<Event>> {
+    deviceId : DeviceId
+    value : Double
+    unit : MeasurementUnit
+    timestamp : Instant
+  }
+
+  class ThresholdExceeded <<Event>> {
+    deviceId : DeviceId
+    metric : String
+    actualValue : Double
+    thresholdValue : Double
+    occurredAt : Instant
+  }
+
+  DeviceTelemetry *-- Measurement
+  DeviceTelemetry *-- "*" Threshold
+  Measurement --> MeasurementUnit
+}
+
+' ============================================================
+'  HEATING & CLIMATE CONTEXT
+' ============================================================
+package "Heating & Climate Context" as ctx_heating #FFEBEE {
+
+  class HeatingZone <<AR>> {
+    id : HeatingZoneId
+    houseId : HouseId
+    name : String
+    sensorId : DeviceId
+    actuatorId : DeviceId
+    activeProfileId : ProfileId
+    currentTemp : Double?
+    heatingActive : Boolean
+    ==
+    applyProfile(profileId)
+    onTemperatureReading(value)
+    startHeating()
+    stopHeating()
+    activateFreezeProtection()
+    ==
+    <b>Invariants:</b>
+    - Гистерезис ±0.5°C (не дёргать реле)
+    - Freeze protection < 5°C всегда
+  }
+
+  class ClimateProfile <<AR>> {
+    id : ProfileId
+    houseId : HouseId
+    name : String
+    targetTemp : Temperature
+    mode : ClimateMode
+    schedule : WeekSchedule?
+    ==
+    adjustTarget(temp)
+    setSchedule(schedule)
+  }
+
+  class Temperature <<VO>> {
+    value : Double
+    unit : TemperatureUnit
+    --
+    toCelsius() : Double
+    isInRange(min, max) : Boolean
+  }
+
+  class WeekSchedule <<VO>> {
+    slots : Map<DayOfWeek, List<TimeSlot>>
+    --
+    getActiveSlot(now) : TimeSlot?
+  }
+
+  enum ClimateMode <<VO>> {
+    COMFORT
+    ECO
+    AWAY
+    FROST_PROTECTION
+  }
+
+  class HeatingStarted <<Event>> {
+    zoneId : HeatingZoneId
+    actuatorId : DeviceId
+    targetTemp : Double
+    currentTemp : Double
+    occurredAt : Instant
+  }
+
+  class HeatingStopped <<Event>> {
+    zoneId : HeatingZoneId
+    reason : String
+    occurredAt : Instant
+  }
+
+  class FreezeProtectionActivated <<Event>> {
+    zoneId : HeatingZoneId
+    currentTemp : Double
+    occurredAt : Instant
+  }
+
+  HeatingZone --> ProfileId
+  ClimateProfile "1" o-- "*" HeatingZone : "applies to"
+  ClimateProfile --> Temperature
+  ClimateProfile --> ClimateMode
+  ClimateProfile --> WeekSchedule
+}
+
+' ============================================================
+'  ACCESS CONTROL CONTEXT
+' ============================================================
+package "Access Control Context" as ctx_access #FCE4EC {
+
+  class AccessPoint <<AR>> {
+    id : AccessPointId
+    deviceId : DeviceId
+    houseId : HouseId
+    keys : List<AccessKey>
+    ==
+    grantKey(userId, expiration) : AccessKey
+    revokeKey(keyId)
+    validateAccess(tokenHash) : AccessResult
+    revokeAllExpiredKeys()
+    ==
+    <b>Invariants:</b>
+    - Макс. 20 ключей на одну точку
+    - Нельзя выдать ключ на прошедшую дату
+  }
+
+  class AccessKey <<Entity>> {
+    id : KeyId
+    userId : UserId
+    tokenHash : TokenHash
+    isActive : Boolean
+    expiresAt : Instant
+    --
+    revoke()
+    isExpired() : Boolean
+  }
+
+  class TokenHash <<VO>> {
+    hash : String
+    algorithm : String
+    --
+    matches(rawToken) : Boolean
+  }
+
+  class AccessResult <<VO>> {
+    granted : Boolean
+    method : {NFC, PIN, REMOTE, BIOMETRIC}
+    keyId : KeyId?
+  }
+
+  class AccessGranted <<Event>> {
+    pointId : AccessPointId
+    userId : UserId
+    method : String
+    occurredAt : Instant
+  }
+
+  class AccessDenied <<Event>> {
+    pointId : AccessPointId
+    reason : String
+    attemptedToken : String
+    occurredAt : Instant
+  }
+
+  AccessPoint *-- "*" AccessKey
+  AccessKey --> TokenHash
+}
+
+' ============================================================
+'  AUTOMATION CONTEXT
+' ============================================================
+package "Automation Context" as ctx_automation #F3E5F5 {
+
+  class AutomationRule <<AR>> {
+    id : RuleId
+    houseId : HouseId
+    name : String
+    isActive : Boolean
+    trigger : TriggerCondition
+    actions : List<RuleAction>
+    cooldownSec : Int
+    lastFiredAt : Instant?
+    ==
+    evaluate(event) : Boolean
+    execute() : List<Command>
+    activate()
+    deactivate()
+    ==
+    <b>Invariants:</b>
+    - Cooldown: не чаще 1 раза в N сек
+    - Макс. 10 действий в одном правиле
+  }
+
+  class TriggerCondition <<VO>> {
+    sourceDeviceId : DeviceId
+    metric : String
+    operator : {GT, LT, EQ, CHANGE}
+    value : Double?
+    --
+    matches(event) : Boolean
+  }
+
+  class RuleAction <<VO>> {
+    targetDeviceId : DeviceId
+    command : String
+    parameters : Map<String, Any>
+    delaySec : Int
+  }
+
+  class RuleTriggered <<Event>> {
+    ruleId : RuleId
+    triggerEvent : String
+    occurredAt : Instant
+  }
+
+  class RuleExecutionFailed <<Event>> {
+    ruleId : RuleId
+    error : String
+    occurredAt : Instant
+  }
+
+  AutomationRule *-- TriggerCondition
+  AutomationRule *-- "*" RuleAction
+}
+
+' ============================================================
+'  USER & BILLING CONTEXT
+' ============================================================
+package "User & Billing Context" as ctx_user #F5F5DC {
+
+  class User <<AR>> {
+    id : UserId
+    email : Email
+    passwordHash : PasswordHash
+    role : UserRole
+    subscription : Subscription?
+    ==
+    register(email, password)
+    changePassword(old, new)
+    subscribe(tier)
+    cancelSubscription()
+    getDeviceQuota() : Int
+    ==
+    <b>Invariants:</b>
+    - Email уникален в системе
+    - Нельзя отменить подписку с долгом
+  }
+
+  class Subscription <<Entity>> {
+    id : SubscriptionId
+    tier : SubscriptionTier
+    price : Money
+    status : SubscriptionStatus
+    startDate : Instant
+    endDate : Instant
+    --
+    renew()
+    cancel()
+    upgrade(newTier)
+    isExpired() : Boolean
+  }
+
+  class Email <<VO>> {
+    value : String
+    --
+    {static} validate(raw) : Email
+  }
+
+  class Money <<VO>> {
+    amount : BigDecimal
+    currency : Currency
+  }
+
+  enum SubscriptionTier <<VO>> {
+    FREE
+    BASIC
+    PREMIUM
+    ENTERPRISE
+  }
+
+  class UserRegistered <<Event>> {
+    userId : UserId
+    email : String
+    occurredAt : Instant
+  }
+
+  class SubscriptionActivated <<Event>> {
+    userId : UserId
+    tier : SubscriptionTier
+    deviceQuota : Int
+    occurredAt : Instant
+  }
+
+  User *-- "0..1" Subscription
+  User --> Email
+  Subscription --> Money
+  Subscription --> SubscriptionTier
+}
+
+' ============================================================
+'  SURVEILLANCE CONTEXT
+' ============================================================
+package "Surveillance Context" as ctx_surveillance #FFF3E0 {
+
+  class CameraFeed <<AR>> {
+    id : CameraFeedId
+    deviceId : DeviceId
+    houseId : HouseId
+    motionDetectionEnabled : Boolean
+    retentionDays : Int
+    ==
+    startLiveStream() : StreamUrl
+    stopLiveStream()
+    onMotionDetected()
+    saveRecording(s3Url, duration)
+    purgeExpiredRecordings()
+    ==
+    <b>Invariants:</b>
+    - Retention зависит от тарифа (7/30/90 дней)
+    - Макс. 1 live stream на камеру
+  }
+
+  class Recording <<AR>> {
+    id : RecordingId
+    cameraFeedId : CameraFeedId
+    s3Location : S3Location
+    triggeredAt : Instant
+    durationSec : Int
+    status : RecordingStatus
+    --
+    markUploaded()
+    markFailed()
+  }
+
+  class S3Location <<VO>> {
+    bucket : String
+    key : String
+    region : String
+    --
+    toUrl() : String
+  }
+
+  class MotionDetected <<Event>> {
+    cameraId : DeviceId
+    houseId : HouseId
+    confidence : Double
+    occurredAt : Instant
+  }
+
+  class RecordingSaved <<Event>> {
+    recordingId : RecordingId
+    cameraId : DeviceId
+    s3Url : String
+    durationSec : Int
+    occurredAt : Instant
+  }
+
+  CameraFeed "1" o-- "*" Recording : "generates (referenced by ID)"
+  Recording --> S3Location
+}
+
+@enduml

@@ -1,0 +1,81 @@
+@startuml
+skinparam packageStyle rect
+skinparam roundcorner 5
+
+title "Device Registry Service — Структура кода (C4 Code Diagram)"
+
+package "cmd/device-registry" as cmd_dev_reg {
+  class "main.go" as main
+}
+
+package internal {
+  package config {
+    class "Config" as config
+  }
+  
+  package domain {
+    package entity {
+      class "House" as house_entity <<AR>>
+      class "Device" as device_entity <<AR>>
+      class "Hub" as hub_entity <<AR>>
+    }
+    package repository {
+      interface "HouseRepository" as house_repo
+      interface "DeviceRepository" as device_repo
+      interface "HubRepository" as hub_repo
+    }
+    package publisher {
+      interface "EventPublisher" as pub_interface
+    }
+    package service {
+      class "DeviceRegistrationService" as registration_service <<Domain Service>>
+    }
+  }
+
+  package service {
+    class "DeviceService" as device_service
+    interface "DeviceUseCase" as usecase_interface
+  }
+
+  package delivery {
+    package http {
+      class "HttpHandler" as http_handler
+    }
+    package grpc {
+      class "GrpcHandler" as grpc_handler
+    }
+  }
+
+  package infrastructure {
+    package db {
+      class "PostgresRepository" as postgres_repo
+    }
+    package kafka {
+      class "KafkaPublisher" as kafka_publisher
+    }
+  }
+}
+
+main --> config : "loads config"
+main --> http_handler : "registers"
+main --> grpc_handler : "registers"
+
+http_handler --> usecase_interface : "calls CRUD operations"
+grpc_handler --> usecase_interface : "calls verification"
+
+device_service ..|> usecase_interface : "implements"
+device_service --> house_repo : "loads house"
+device_service --> device_repo : "saves device"
+device_service --> hub_repo : "saves hub"
+device_service --> registration_service : "delegates registration logic"
+device_service --> pub_interface : "publishes configuration changes"
+
+postgres_repo ..|> house_repo : "implements"
+postgres_repo ..|> device_repo : "implements"
+postgres_repo ..|> hub_repo : "implements"
+kafka_publisher ..|> pub_interface : "implements"
+
+registration_service --> house_entity : "verifies invariants"
+registration_service --> device_entity : "creates"
+
+@enduml

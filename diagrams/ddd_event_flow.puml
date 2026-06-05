@@ -1,0 +1,98 @@
+@startuml
+skinparam roundcorner 5
+skinparam componentFontSize 12
+skinparam queueFontSize 11
+skinparam noteFontSize 10
+
+title "WarmHouse — Kafka Domain Event Flow"
+caption Как доменные события текут между Bounded Contexts через Kafka-топики
+
+' === BOUNDED CONTEXTS (Producers / Consumers) ===
+
+component "Device Registry\nContext" as ctx_registry #C8E6C9
+component "Telemetry\nContext" as ctx_telemetry #BBDEFB
+component "Heating & Climate\nContext" as ctx_heating #FFCDD2
+component "Automation\nContext" as ctx_automation #CE93D8
+component "Access Control\nContext" as ctx_access #F8BBD0
+component "Surveillance\nContext" as ctx_surveillance #FFE0B2
+component "User & Billing\nContext" as ctx_user #F5F5DC
+component "Notification\nService" as ctx_notify #B0BEC5
+
+' === KAFKA TOPICS ===
+
+queue "device.events\n──────────────\nDeviceRegistered\nDeviceDecommissioned\nFirmwareUpdated\nHubStatusChanged" as topic_device #E8F5E9
+
+queue "telemetry.measurements\n──────────────\nMeasurementRecorded" as topic_telemetry #E3F2FD
+
+queue "telemetry.alerts\n──────────────\nThresholdExceeded" as topic_alerts #FFCDD2
+
+queue "heating.events\n──────────────\nHeatingStarted\nHeatingStopped\nFreezeProtectionActivated" as topic_heating #FFEBEE
+
+queue "automation.commands\n──────────────\nRuleTriggered\nRuleExecuted\nRuleExecutionFailed" as topic_automation #F3E5F5
+
+queue "access.events\n──────────────\nAccessGranted\nAccessDenied" as topic_access #FCE4EC
+
+queue "surveillance.events\n──────────────\nMotionDetected\nRecordingSaved" as topic_surveillance #FFF3E0
+
+queue "user.events\n──────────────\nUserRegistered\nSubscriptionActivated\nSubscriptionExpired" as topic_user #F5F5DC
+
+' === PRODUCE (кто публикует) ===
+
+ctx_registry -down-> topic_device : publish
+ctx_telemetry -down-> topic_telemetry : publish
+ctx_telemetry -down-> topic_alerts : publish
+ctx_heating -down-> topic_heating : publish
+ctx_automation -down-> topic_automation : publish
+ctx_access -down-> topic_access : publish
+ctx_surveillance -down-> topic_surveillance : publish
+ctx_user -down-> topic_user : publish
+
+' === CONSUME (кто подписан) ===
+
+topic_device -down-> ctx_telemetry : <i>Узнать о новом устройстве\n<i>для инициализации кэша
+topic_device -down-> ctx_heating : <i>Устройство удалено?\n<i>Освободить HeatingZone
+
+topic_telemetry -down-> ctx_heating : <i>Новая температура?\n<i>Пересчитать отопление
+topic_telemetry -down-> ctx_automation : <i>Показание пришло?\n<i>Проверить trigger-условия
+
+topic_alerts -down-> ctx_notify : <i>Порог превышен?\n<i>Push/SMS/Email
+
+topic_heating -down-> ctx_notify : <i>Freeze protection!\n<i>Срочное уведомление
+topic_heating -down-> ctx_automation : <i>Отопление включилось?\n<i>Каскадные правила
+
+topic_automation -down-> ctx_heating : <i>Rule: включить обогрев\n<i>Command → HeatingZone
+topic_automation -down-> ctx_registry : <i>Rule: переключить реле\n<i>Command → Device
+
+topic_access -down-> ctx_notify : <i>AccessDenied?\n<i>Уведомить владельца
+topic_access -down-> ctx_automation : <i>Дверь открыта?\n<i>Trigger: включить свет
+
+topic_surveillance -down-> ctx_notify : <i>Движение!\n<i>Push + превью кадра
+topic_surveillance -down-> ctx_automation : <i>MotionDetected?\n<i>Trigger: включить свет
+
+topic_user -down-> ctx_registry : <i>Тариф изменился?\n<i>Обновить лимит устройств
+
+' === LEGEND ===
+
+legend right
+  <b>Цветовая схема:</b>
+  |= Цвет |= Bounded Context |
+  | <#C8E6C9> | Device Registry |
+  | <#BBDEFB> | Telemetry |
+  | <#FFCDD2> | Heating & Climate |
+  | <#CE93D8> | Automation |
+  | <#F8BBD0> | Access Control |
+  | <#FFE0B2> | Surveillance |
+  | <#F5F5DC> | User & Billing |
+  | <#B0BEC5> | Notification |
+  
+  <b>Паттерн:</b>
+  Каждый контекст публикует события в свой топик.
+  Другие контексты подписываются на нужные топики
+  и реагируют в своей доменной логике.
+  
+  <b>Формат сообщений:</b> CloudEvents (JSON)
+  <b>Сериализация:</b> Protobuf / Avro (schema registry)
+  <b>Гарантия:</b> at-least-once + идемпотентные обработчики
+end legend
+
+@enduml

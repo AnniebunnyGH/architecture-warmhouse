@@ -1,0 +1,64 @@
+@startuml
+skinparam packageStyle rect
+skinparam roundcorner 5
+
+title "Локальный Хаб (Edge) — Структура кода (C4 Code Diagram)"
+
+package "cmd/hub" as cmd_hub {
+  class "main.go" as main
+}
+
+package internal {
+  package config {
+    class "Config" as config
+  }
+
+  package driver {
+    class "MatterDriver" as protocol_driver
+  }
+
+  package cache {
+    class "StateCache" as state_cache
+  }
+
+  package engine {
+    class "EdgeAutomationEngine" as rules_engine
+  }
+
+  package "repository/sqlite" as repository_sqlite {
+    class "SqliteRuleRepository" as local_db
+  }
+
+  package buffer {
+    class "TelemetryBuffer" as local_buffer
+  }
+
+  package sync {
+    class "CloudSyncClient" as sync_client
+  }
+
+  package "api/provision" as api_provision {
+    class "LocalAdminServer" as local_admin
+  }
+}
+
+main --> config : "loads local config"
+main --> protocol_driver : "starts polling"
+main --> rules_engine : "runs engine loop"
+main --> sync_client : "starts WebSocket client loop"
+main --> local_admin : "starts provisioning API"
+
+protocol_driver --> state_cache : "writes state changes"
+protocol_driver --> local_buffer : "records telemetry data points"
+
+state_cache --> rules_engine : "triggers rule evaluation"
+rules_engine --> local_db : "reads stored scenarios"
+rules_engine --> protocol_driver : "sends write commands on matches"
+
+sync_client --> local_buffer : "reads unsent logs to publish"
+sync_client --> state_cache : "receives cloud override commands"
+sync_client --> local_db : "saves updated scenarios"
+
+local_admin --> local_db : "writes credentials & pairings"
+
+@enduml
