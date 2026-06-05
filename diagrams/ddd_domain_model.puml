@@ -28,21 +28,14 @@ package "Device Registry Context" as ctx_registry #E8F5E9 {
     ownerId : UserId
     name : String
     address : Address
-    devices : List<Device>
-    modules : List<Module>
-    ==
-    registerDevice(serial, type) : Device
-    decommissionDevice(deviceId)
-    installModule(serial) : Module
-    removeModule(moduleId)
     ==
     <b>Invariants:</b>
-    - Макс. кол-во устройств по тарифу
-    - Нельзя удалить модуль с привязанными устройствами
+    - Лимиты на число устройств проверяются через Domain Service
   }
 
-  class Device <<Entity>> {
+  class Device <<AR>> {
     id : DeviceId
+    houseId : HouseId
     serialNumber : SerialNumber
     type : DeviceType
     status : DeviceStatus
@@ -59,17 +52,22 @@ package "Device Registry Context" as ctx_registry #E8F5E9 {
     - Нельзя деактивировать, если привязан к HeatingZone
   }
 
-  class Module <<Entity>> {
+  class Module <<AR>> {
     id : ModuleId
+    houseId : HouseId
     serialNumber : SerialNumber
     firmware : FirmwareVersion
     status : ModuleStatus
-    pairedDevices : List<DeviceId>
     ==
     goOnline()
     goOffline()
-    pairDevice(deviceId)
-    unpairDevice(deviceId)
+  }
+
+  class DeviceRegistrationService <<Domain Service>> {
+    + registerDevice(houseId, serial, type, quotaChecker) : Device
+    ==
+    <b>Invariants:</b>
+    - Максимальное количество устройств по тарифу
   }
 
   class SerialNumber <<VO>> {
@@ -140,9 +138,11 @@ package "Device Registry Context" as ctx_registry #E8F5E9 {
     occurredAt : Instant
   }
 
-  House "1" *-down- "*" Device
-  House "1" *-down- "*" Module
-  Module "1" o-- "*" Device : manages >
+  House "1" o-- "*" Device : "belongs to"
+  House "1" o-- "*" Module : "belongs to"
+  Module "1" o-- "*" Device : "manages (referenced by ID)"
+  DeviceRegistrationService ..> Device : "creates"
+  DeviceRegistrationService ..> House : "checks quota"
   Device --> SerialNumber
   Device --> DeviceStatus
   Device --> DeviceType
@@ -228,11 +228,11 @@ package "Heating & Climate Context" as ctx_heating #FFEBEE {
     name : String
     sensorId : DeviceId
     actuatorId : DeviceId
-    activeProfile : ClimateProfile
+    activeProfileId : ProfileId
     currentTemp : Double?
     heatingActive : Boolean
     ==
-    applyProfile(profile)
+    applyProfile(profileId)
     onTemperatureReading(value)
     startHeating()
     stopHeating()
@@ -243,7 +243,7 @@ package "Heating & Climate Context" as ctx_heating #FFEBEE {
     - Freeze protection < 5°C всегда
   }
 
-  class ClimateProfile <<Entity>> {
+  class ClimateProfile <<AR>> {
     id : ProfileId
     houseId : HouseId
     name : String
@@ -296,7 +296,8 @@ package "Heating & Climate Context" as ctx_heating #FFEBEE {
     occurredAt : Instant
   }
 
-  HeatingZone *-- ClimateProfile : activeProfile
+  HeatingZone --> ProfileId
+  ClimateProfile "1" o-- "*" HeatingZone : "applies to"
   ClimateProfile --> Temperature
   ClimateProfile --> ClimateMode
   ClimateProfile --> WeekSchedule
@@ -505,7 +506,6 @@ package "Surveillance Context" as ctx_surveillance #FFF3E0 {
     id : CameraFeedId
     deviceId : DeviceId
     houseId : HouseId
-    recordings : List<Recording>
     motionDetectionEnabled : Boolean
     retentionDays : Int
     ==
@@ -520,8 +520,9 @@ package "Surveillance Context" as ctx_surveillance #FFF3E0 {
     - Макс. 1 live stream на камеру
   }
 
-  class Recording <<Entity>> {
+  class Recording <<AR>> {
     id : RecordingId
+    cameraFeedId : CameraFeedId
     s3Location : S3Location
     triggeredAt : Instant
     durationSec : Int
@@ -554,7 +555,7 @@ package "Surveillance Context" as ctx_surveillance #FFF3E0 {
     occurredAt : Instant
   }
 
-  CameraFeed *-- "*" Recording
+  CameraFeed "1" o-- "*" Recording : "generates (referenced by ID)"
   Recording --> S3Location
 }
 

@@ -15,14 +15,20 @@ package internal {
   
   package domain {
     package entity {
-      class "Device" as device_entity
-      class "Hub" as hub_entity
+      class "House" as house_entity <<AR>>
+      class "Device" as device_entity <<AR>>
+      class "Hub" as hub_entity <<AR>>
     }
     package repository {
-      interface "DeviceRepository" as repo_interface
+      interface "HouseRepository" as house_repo
+      interface "DeviceRepository" as device_repo
+      interface "HubRepository" as hub_repo
     }
     package publisher {
       interface "EventPublisher" as pub_interface
+    }
+    package service {
+      class "DeviceRegistrationService" as registration_service <<Domain Service>>
     }
   }
 
@@ -58,13 +64,18 @@ http_handler --> usecase_interface : "calls CRUD operations"
 grpc_handler --> usecase_interface : "calls verification"
 
 device_service ..|> usecase_interface : "implements"
-device_service --> repo_interface : "reads/writes metadata"
+device_service --> house_repo : "loads house"
+device_service --> device_repo : "saves device"
+device_service --> hub_repo : "saves hub"
+device_service --> registration_service : "delegates registration logic"
 device_service --> pub_interface : "publishes configuration changes"
 
-postgres_repo ..|> repo_interface : "implements"
+postgres_repo ..|> house_repo : "implements"
+postgres_repo ..|> device_repo : "implements"
+postgres_repo ..|> hub_repo : "implements"
 kafka_publisher ..|> pub_interface : "implements"
 
-device_service --> device_entity : "manages"
-device_service --> hub_entity : "manages"
+registration_service --> house_entity : "verifies invariants"
+registration_service --> device_entity : "creates"
 
 @enduml

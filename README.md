@@ -55,6 +55,13 @@
 8. **Домен пользователей и биллинга (User & Subscription SaaS Context):**
    - **Границы:** Управление учетными записями пользователей, авторизация доступа, биллинг и управление SaaS-тарифами (например, дифференцированная подписка: дороже для Direct-to-Cloud без хаба, дешевле при покупке Хаба).
 
+Для детальной проработки доменов и потоков данных разработаны вспомогательные схемы:
+* **Тактическая модель предметной области (DDD Tactical Domain Model):** исходный код схемы: [ddd_domain_model.puml](diagrams/ddd_domain_model.puml)
+![DDD Tactical Domain Model](images/ddd_domain_model.png)
+
+* **Схема потоков доменных событий через Kafka (Kafka Domain Event Flow):** исходный код схемы: [ddd_event_flow.puml](diagrams/ddd_event_flow.puml)
+![Kafka Domain Event Flow](images/ddd_event_flow.png)
+
 ### **4. Проблемы монолитного решения**
 
 - **Блокирующие синхронные запросы (Tight Coupling):** Прямой опрос внешнего Temperature API во время HTTP-запроса пользователя приводит к задержкам. В случае падения внешнего API весь список датчиков возвращает ошибку или зависает.
@@ -64,7 +71,7 @@
 
 ### 5. Визуализация контекста системы — диаграмма С4
 
-Диаграмма контекста As-Is, отражающая взаимодействие монолита «Тёплый дом» с пользователями, инженерами и внешним API датчиков:
+Диаграмма контекста As-Is, отражающая взаимодействие монолита «Тёплый дом» с пользователями, инженерами и внешним API датчиков (исходный код схемы: [context.puml](diagrams/context.puml)):
 
 ![As-Is Context Diagram](images/context.png)
 
@@ -75,21 +82,43 @@
 
 **Диаграмма контейнеров (Containers)**
 
-Добавьте диаграмму.
+* Исходный код схемы: [container.puml](diagrams/container.puml)
+
+![To-Be Container Diagram](images/container.png)
 
 **Диаграмма компонентов (Components)**
 
-Добавьте диаграмму для каждого из выделенных микросервисов.
+Ниже представлены диаграммы компонентов для ключевых микросервисов:
+
+1. **Device Registry Service (Реестр устройств):** (исходный код схемы: [components.puml](diagrams/device_registry/components.puml))
+![Device Registry Components](images/device_registry_components.png)
+
+2. **IoT Gateway Service (Шлюз устройств):** (исходный код схемы: [components.puml](diagrams/iot_gateway/components.puml))
+![IoT Gateway Components](images/iot_gateway_components.png)
+
+3. **Local Hub (Локальный Хаб):** (исходный код схемы: [components.puml](diagrams/local_hub/components.puml))
+![Local Hub Components](images/local_hub_components.png)
 
 **Диаграмма кода (Code)**
 
-Добавьте одну диаграмму или несколько.
+Ниже представлены диаграммы кода (низкоуровневой структуры классов/пакетов) для основных компонентов:
+
+1. **Device Registry Service (Реестр устройств):** (исходный код схемы: [code.puml](diagrams/device_registry/code.puml))
+![Device Registry Code](images/device_registry_code.png)
+
+2. **IoT Gateway Service (Шлюз устройств):** (исходный код схемы: [code.puml](diagrams/iot_gateway/code.puml))
+![IoT Gateway Code](images/iot_gateway_code.png)
+
+3. **Local Hub (Локальный Хаб):** (исходный код схемы: [code.puml](diagrams/local_hub/code.puml))
+![Local Hub Code](images/local_hub_code.png)
 
 # Задание 3. Разработка ER-диаграммы
 
 Целевая база данных спроектирована с учетом паттерна **Database per Service** (база данных для каждого микросервиса), что гарантирует независимость и слабую связанность сервисов. Ниже представлена логическая модель, объединяющая таблицы всех доменов платформы.
 
 ### 1. Визуализация схемы базы данных (ER-диаграмма)
+
+* Исходный код схемы: [er.puml](diagrams/er.puml)
 
 ![Target ER Diagram](images/er.png)
 
@@ -209,13 +238,91 @@
 
 # Задание 4. Создание и документирование API
 
-### 1. Тип API
+### 1. Типы API и обоснование выбора
 
-Укажите, какой тип API вы будете использовать для взаимодействия микросервисов. Объясните своё решение.
+В платформе «Тёплый дом» используются **три типа API**, каждый из которых оптимален для своего класса взаимодействий:
+
+| Тип API | Стандарт документирования | Назначение | Обоснование |
+|---|---|---|---|
+| **REST API** | OpenAPI 3.0 (Swagger) | Внешние клиенты (мобильное приложение, веб-дашборд) → API Gateway → микросервисы | Стандарт де-факто для публичных API. Удобен для фронтенд-разработчиков, легко тестируется через Postman/curl, поддерживает кэширование через HTTP-заголовки |
+| **gRPC** | Protocol Buffers (.proto) | Синхронные запросы между микросервисами (service-to-service) | Бинарный протокол с минимальными накладными расходами. Строгая типизация через Protobuf. Автогенерация клиентов на Go/Java/Python. Поддержка streaming для больших ответов |
+| **Async Events** | AsyncAPI 2.6 | Асинхронное событийное взаимодействие через Apache Kafka | Развязка сервисов: публикатор не знает о подписчиках. Гарантированная доставка (at-least-once). Естественный способ распространения доменных событий (DDD) |
+
+**Почему не только REST?** REST подразумевает синхронный request-response. Но в IoT-системе:
+- Телеметрия приходит потоком тысяч сообщений/сек → нужен Kafka.
+- Межсервисные запросы (например, «получить информацию об устройстве» из Heating Service) требуют минимальной латентности → gRPC быстрее REST в 2-10x за счёт бинарной сериализации и HTTP/2.
+- Доменные события (DeviceRegistered, HeatingStarted) должны доставляться всем заинтересованным сервисам без жёсткой связи → Kafka pub/sub.
+
+---
 
 ### 2. Документация API
 
-Здесь приложите ссылки на документацию API для микросервисов, которые вы спроектировали в первой части проектной работы. Для документирования используйте Swagger/OpenAPI или AsyncAPI.
+#### A. REST API — OpenAPI 3.0
+
+📄 **Спецификация:** [api/openapi.yaml](api/openapi.yaml)
+
+Внешний REST API проходит через API Gateway и покрывает 5 ключевых эндпоинтов:
+
+| # | Метод | Эндпоинт | Описание | Сервис |
+|---|---|---|---|---|
+| 1 | `POST` | `/houses/{houseId}/devices` | Зарегистрировать новое устройство | Device Registry |
+| 2 | `GET` | `/devices/{deviceId}` | Получить информацию об устройстве | Device Registry |
+| 3 | `GET` | `/devices/{deviceId}/telemetry` | Получить показания датчика | Telemetry |
+| 4 | `POST` | `/devices/{deviceId}/commands` | Отправить команду устройству | IoT Gateway |
+| 5 | `PUT` | `/heating-zones/{zoneId}/profile` | Установить климатический профиль | Heating |
+
+Для каждого эндпоинта в спецификации описаны:
+- Формат запроса (JSON-схема тела)
+- Формат ответа (JSON-схема + примеры)
+- HTTP-коды: `200`, `201`, `202`, `400`, `404`, `409`, `422`
+- Примеры запросов и ответов в блоке `examples`
+
+**Аутентификация:** Bearer JWT-токен.
+
+---
+
+#### B. Async Events API — AsyncAPI 2.6
+
+В соответствии с лучшими практиками микросервисной разработки, спецификация асинхронного взаимодействия разделена на контракты конкретных сервисов (это позволяет избежать дублирования описания топиков для отправителей и получателей):
+
+*   📄 **Реестр устройств (Device Registry):** [api/device-registry-asyncapi.yaml](api/device-registry-asyncapi.yaml) — описывает события, которые сервис публикует в топик `device.events`, и события, которые он слушает из `user.events`.
+*   📄 **Телеметрия (Telemetry):** [api/telemetry-asyncapi.yaml](api/telemetry-asyncapi.yaml) — описывает события, которые сервис публикует в `telemetry.measurements` и `telemetry.alerts`, и его подписку на `device.events`.
+*   📄 **Климат-контроль (Heating Control):** [api/heating-asyncapi.yaml](api/heating-asyncapi.yaml) — описывает события, публикуемые в `heating.events`, и подписки на `device.events` и `telemetry.measurements`.
+
+Общая схема движения доменных событий в системе представлена на диаграмме в Задании 1: [Kafka Domain Event Flow](diagrams/ddd_event_flow.puml).
+
+Сводная таблица по топикам и событиям:
+
+| # | Топик | События | Публикатор | Потребители |
+|---|---|---|---|---|
+| 1 | `device.events` | DeviceRegistered, DeviceDecommissioned, FirmwareUpdated, HubStatusChanged | Device Registry | Telemetry, Heating, Automation |
+| 2 | `telemetry.measurements` | MeasurementRecorded | Telemetry | Heating, Automation |
+| 3 | `telemetry.alerts` | ThresholdExceeded | Telemetry | Notification |
+| 4 | `heating.events` | HeatingStarted, HeatingStopped, FreezeProtectionActivated | Heating | Notification, Automation |
+| 5 | `access.events` | AccessGranted, AccessDenied | Access Control | Notification, Automation |
+| 6 | `user.events` | SubscriptionActivated, SubscriptionExpired | User & Billing | Device Registry |
+
+**Гарантии:** at-least-once + идемпотентные обработчики.
+**Формат обёртки:** CloudEvents v1.0.
+**Партиционирование:** по **deviceId** / **houseId** / **userId** для сохранения порядка событий.
+
+---
+
+#### C. gRPC API — Protocol Buffers
+
+📄 **Спецификация:** [api/proto/device_registry.proto](api/proto/device_registry.proto)
+
+Синхронный inter-service API для запросов, требующих немедленного ответа:
+
+| # | RPC-метод | Описание | Вызывающие сервисы |
+|---|---|---|---|
+| 1 | `GetDevice(deviceId)` | Получить информацию об устройстве | Heating, Automation, Telemetry |
+| 2 | `ListHouseDevices(houseId)` | Список устройств дома с фильтрацией | Heating (построение списка зон) |
+| 3 | `CheckDeviceQuota(userId)` | Проверить лимит устройств по подписке | API Gateway (при регистрации) |
+
+**Протокол:** HTTP/2 + Protobuf (бинарная сериализация).
+**Пагинация:** cursor-based (`page_token`).
+
 
 # Задание 5. Работа с docker и docker-compose
 

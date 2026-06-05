@@ -1,0 +1,561 @@
+openapi: 3.0.3
+info:
+  title: WarmHouse IoT Platform — External REST API
+  description: |
+    Внешний REST API платформы «Тёплый дом» для мобильных и веб-клиентов.
+    Запросы проходят через API Gateway, который маршрутизирует их к соответствующим микросервисам.
+
+    **Аутентификация:** Bearer JWT-токен, полученный через эндпоинт `/auth/login`.
+
+    **Базовый URL:** `https://api.warmhouse.io/api/v1`
+  version: 1.0.0
+  contact:
+    name: WarmHouse Platform Team
+
+servers:
+  - url: https://api.warmhouse.io/api/v1
+    description: Production
+  - url: https://staging-api.warmhouse.io/api/v1
+    description: Staging
+
+tags:
+  - name: Devices
+    description: Управление устройствами (Device Registry Service)
+  - name: Telemetry
+    description: Получение показаний датчиков (Telemetry Service)
+  - name: Heating
+    description: Управление отоплением и климатом (Heating Service)
+  - name: Commands
+    description: Отправка команд устройствам (IoT Gateway)
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ─────────────────────────────────────────────
+  #  1. Регистрация устройства
+  # ─────────────────────────────────────────────
+  /houses/{houseId}/devices:
+    post:
+      tags: [Devices]
+      summary: Зарегистрировать новое устройство в доме
+      description: |
+        Создаёт запись устройства в реестре и привязывает его к указанному дому.
+        Если указан `moduleId`, устройство будет сопряжено с локальным хабом.
+        Публикует доменное событие `DeviceRegistered` в Kafka-топик `device.events`.
+      operationId: registerDevice
+      parameters:
+        - $ref: '#/components/parameters/HouseId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterDeviceRequest'
+            examples:
+              thermometer:
+                summary: Регистрация термометра через хаб
+                value:
+                  serialNumber: "TH-2024-000142"
+                  typeId: 1
+                  name: "Термометр в гостиной"
+                  moduleId: 12
+              camera_direct:
+                summary: Регистрация камеры (direct-to-cloud)
+                value:
+                  serialNumber: "CAM-2024-000087"
+                  typeId: 4
+                  name: "Камера у входа"
+                  moduleId: null
+      responses:
+        '201':
+          description: Устройство успешно зарегистрировано
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceResponse'
+              example:
+                id: 256
+                serialNumber: "TH-2024-000142"
+                type:
+                  id: 1
+                  name: "THERMOMETER"
+                name: "Термометр в гостиной"
+                houseId: 5
+                moduleId: 12
+                status: "ACTIVE"
+                firmwareVersion: "1.0.0"
+                createdAt: "2024-06-04T12:00:00Z"
+        '400':
+          description: Некорректные данные запроса
+          content:
+            application/json:
+              example:
+                error: "VALIDATION_ERROR"
+                message: "serialNumber must match pattern XX-YYYY-NNNNNN"
+                details:
+                  field: "serialNumber"
+                  value: "invalid"
+        '404':
+          description: Дом не найден
+          content:
+            application/json:
+              example:
+                error: "HOUSE_NOT_FOUND"
+                message: "House with id 999 not found"
+        '409':
+          description: Устройство с таким серийным номером уже зарегистрировано
+          content:
+            application/json:
+              example:
+                error: "DEVICE_ALREADY_EXISTS"
+                message: "Device with serial number TH-2024-000142 is already registered"
+        '422':
+          description: Превышен лимит устройств по тарифу
+          content:
+            application/json:
+              example:
+                error: "DEVICE_QUOTA_EXCEEDED"
+                message: "Subscription tier BASIC allows max 10 devices, current: 10"
+
+  # ─────────────────────────────────────────────
+  #  2. Получение информации об устройстве
+  # ─────────────────────────────────────────────
+  /devices/{deviceId}:
+    get:
+      tags: [Devices]
+      summary: Получить информацию об устройстве
+      description: |
+        Возвращает полную информацию об устройстве из реестра, включая тип,
+        статус, версию прошивки и привязку к модулю/дому.
+      operationId: getDevice
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      responses:
+        '200':
+          description: Информация об устройстве
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceResponse'
+              example:
+                id: 256
+                serialNumber: "TH-2024-000142"
+                type:
+                  id: 1
+                  name: "THERMOMETER"
+                name: "Термометр в гостиной"
+                houseId: 5
+                moduleId: 12
+                status: "ACTIVE"
+                firmwareVersion: "2.4.1"
+                createdAt: "2024-06-04T12:00:00Z"
+        '404':
+          description: Устройство не найдено
+          content:
+            application/json:
+              example:
+                error: "DEVICE_NOT_FOUND"
+                message: "Device with id 9999 not found"
+
+  # ─────────────────────────────────────────────
+  #  3. Получение телеметрии устройства
+  # ─────────────────────────────────────────────
+  /devices/{deviceId}/telemetry:
+    get:
+      tags: [Telemetry]
+      summary: Получить показания телеметрии устройства
+      description: |
+        Возвращает временной ряд показаний датчика за указанный период.
+        Последнее значение берётся из Redis-кэша (быстрый ответ),
+        история — из TimescaleDB.
+      operationId: getDeviceTelemetry
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+        - name: from
+          in: query
+          description: Начало периода (ISO 8601)
+          required: false
+          schema:
+            type: string
+            format: date-time
+          example: "2024-06-04T00:00:00Z"
+        - name: to
+          in: query
+          description: Конец периода (ISO 8601)
+          required: false
+          schema:
+            type: string
+            format: date-time
+          example: "2024-06-04T23:59:59Z"
+        - name: limit
+          in: query
+          description: Максимальное количество записей (по умолчанию 100)
+          required: false
+          schema:
+            type: integer
+            default: 100
+            maximum: 1000
+      responses:
+        '200':
+          description: Список показаний телеметрии
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TelemetryResponse'
+              example:
+                deviceId: 256
+                latest:
+                  value: 22.5
+                  unit: "CELSIUS"
+                  timestamp: "2024-06-04T14:30:00Z"
+                history:
+                  - value: 22.5
+                    unit: "CELSIUS"
+                    timestamp: "2024-06-04T14:30:00Z"
+                  - value: 22.3
+                    unit: "CELSIUS"
+                    timestamp: "2024-06-04T14:25:00Z"
+                  - value: 22.1
+                    unit: "CELSIUS"
+                    timestamp: "2024-06-04T14:20:00Z"
+                totalCount: 3
+        '404':
+          description: Устройство не найдено
+          content:
+            application/json:
+              example:
+                error: "DEVICE_NOT_FOUND"
+                message: "Device with id 9999 not found"
+
+  # ─────────────────────────────────────────────
+  #  4. Отправка команды устройству
+  # ─────────────────────────────────────────────
+  /devices/{deviceId}/commands:
+    post:
+      tags: [Commands]
+      summary: Отправить команду устройству
+      description: |
+        Отправляет управляющую команду на устройство через IoT Gateway.
+        Для устройств, подключённых через хаб, команда маршрутизируется
+        через WebSocket-соединение с хабом. Для direct-to-cloud — напрямую по MQTT.
+
+        Команда выполняется асинхронно. Ответ `202 Accepted` означает,
+        что команда принята в обработку. Результат выполнения придёт
+        через WebSocket-канал уведомлений или Kafka-событие.
+      operationId: sendDeviceCommand
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceCommandRequest'
+            examples:
+              turn_on_relay:
+                summary: Включить реле отопления
+                value:
+                  command: "SET_STATE"
+                  parameters:
+                    state: "ON"
+                    power: 80
+              set_brightness:
+                summary: Установить яркость лампы
+                value:
+                  command: "SET_BRIGHTNESS"
+                  parameters:
+                    brightness: 75
+                    transition_ms: 500
+      responses:
+        '202':
+          description: Команда принята в обработку
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandAcceptedResponse'
+              example:
+                commandId: "cmd-a1b2c3d4"
+                deviceId: 256
+                command: "SET_STATE"
+                status: "PENDING"
+                acceptedAt: "2024-06-04T14:35:00Z"
+                estimatedDeliveryMs: 200
+        '400':
+          description: Некорректная команда
+          content:
+            application/json:
+              example:
+                error: "INVALID_COMMAND"
+                message: "Command SET_BRIGHTNESS is not supported for device type RELAY"
+        '404':
+          description: Устройство не найдено
+        '409':
+          description: Устройство не в сети
+          content:
+            application/json:
+              example:
+                error: "DEVICE_OFFLINE"
+                message: "Device 256 is currently offline. Last seen: 2024-06-04T10:00:00Z"
+
+  # ─────────────────────────────────────────────
+  #  5. Управление климатическим профилем зоны
+  # ─────────────────────────────────────────────
+  /heating-zones/{zoneId}/profile:
+    put:
+      tags: [Heating]
+      summary: Установить климатический профиль для зоны отопления
+      description: |
+        Применяет указанный климатический профиль к зоне отопления.
+        Сервис отопления пересчитает целевую температуру и при необходимости
+        включит или выключит обогреватель. Публикует событие `HeatingStarted`
+        или `HeatingStopped` в Kafka-топик `heating.events`.
+      operationId: setHeatingZoneProfile
+      parameters:
+        - name: zoneId
+          in: path
+          required: true
+          description: ID зоны отопления
+          schema:
+            type: integer
+          example: 3
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetProfileRequest'
+            examples:
+              comfort:
+                summary: Включить режим «Комфорт»
+                value:
+                  profileId: 1
+              eco:
+                summary: Включить режим «Эко»
+                value:
+                  profileId: 2
+      responses:
+        '200':
+          description: Профиль успешно применён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HeatingZoneResponse'
+              example:
+                zoneId: 3
+                name: "Гостиная"
+                activeProfile:
+                  id: 1
+                  name: "Комфорт"
+                  targetTemp: 23.0
+                  mode: "COMFORT"
+                currentTemp: 19.5
+                heatingActive: true
+                actuatorDeviceId: 42
+                sensorDeviceId: 256
+        '404':
+          description: Зона или профиль не найдены
+          content:
+            application/json:
+              example:
+                error: "ZONE_NOT_FOUND"
+                message: "Heating zone with id 999 not found"
+
+# ═══════════════════════════════════════════════
+#  COMPONENTS
+# ═══════════════════════════════════════════════
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT-токен, полученный через POST /auth/login
+
+  parameters:
+    HouseId:
+      name: houseId
+      in: path
+      required: true
+      description: ID дома
+      schema:
+        type: integer
+      example: 5
+    DeviceId:
+      name: deviceId
+      in: path
+      required: true
+      description: ID устройства
+      schema:
+        type: integer
+      example: 256
+
+  schemas:
+    # ── Requests ──
+    RegisterDeviceRequest:
+      type: object
+      required: [serialNumber, typeId, name]
+      properties:
+        serialNumber:
+          type: string
+          pattern: '^[A-Z]{2,4}-\d{4}-\d{6}$'
+          description: Серийный номер устройства (формат XX-YYYY-NNNNNN)
+          example: "TH-2024-000142"
+        typeId:
+          type: integer
+          description: ID типа устройства из справочника DeviceType
+          example: 1
+        name:
+          type: string
+          maxLength: 100
+          description: Пользовательское название устройства
+          example: "Термометр в гостиной"
+        moduleId:
+          type: integer
+          nullable: true
+          description: ID хаба для сопряжения (null = direct-to-cloud)
+          example: 12
+
+    DeviceCommandRequest:
+      type: object
+      required: [command]
+      properties:
+        command:
+          type: string
+          enum: [SET_STATE, SET_BRIGHTNESS, SET_TEMPERATURE, LOCK, UNLOCK, REBOOT]
+          description: Тип команды
+        parameters:
+          type: object
+          additionalProperties: true
+          description: Параметры команды (зависят от типа)
+
+    SetProfileRequest:
+      type: object
+      required: [profileId]
+      properties:
+        profileId:
+          type: integer
+          description: ID климатического профиля для применения
+          example: 1
+
+    # ── Responses ──
+    DeviceResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        serialNumber:
+          type: string
+        type:
+          type: object
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+        name:
+          type: string
+        houseId:
+          type: integer
+        moduleId:
+          type: integer
+          nullable: true
+        status:
+          type: string
+          enum: [ACTIVE, INACTIVE, MAINTENANCE, DECOMMISSIONED]
+        firmwareVersion:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    TelemetryResponse:
+      type: object
+      properties:
+        deviceId:
+          type: integer
+        latest:
+          $ref: '#/components/schemas/Measurement'
+        history:
+          type: array
+          items:
+            $ref: '#/components/schemas/Measurement'
+        totalCount:
+          type: integer
+
+    Measurement:
+      type: object
+      properties:
+        value:
+          type: number
+          format: double
+        unit:
+          type: string
+          enum: [CELSIUS, PERCENT, LUX, BOOLEAN, WATT]
+        timestamp:
+          type: string
+          format: date-time
+
+    CommandAcceptedResponse:
+      type: object
+      properties:
+        commandId:
+          type: string
+          description: Уникальный ID команды для отслеживания статуса
+        deviceId:
+          type: integer
+        command:
+          type: string
+        status:
+          type: string
+          enum: [PENDING, DELIVERED, EXECUTED, FAILED]
+        acceptedAt:
+          type: string
+          format: date-time
+        estimatedDeliveryMs:
+          type: integer
+          description: Ожидаемое время доставки команды в миллисекундах
+
+    HeatingZoneResponse:
+      type: object
+      properties:
+        zoneId:
+          type: integer
+        name:
+          type: string
+        activeProfile:
+          type: object
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+            targetTemp:
+              type: number
+              format: double
+            mode:
+              type: string
+              enum: [COMFORT, ECO, AWAY, FROST_PROTECTION]
+        currentTemp:
+          type: number
+          format: double
+        heatingActive:
+          type: boolean
+        actuatorDeviceId:
+          type: integer
+        sensorDeviceId:
+          type: integer
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Код ошибки (UPPER_SNAKE_CASE)
+        message:
+          type: string
+          description: Человекочитаемое описание ошибки
+        details:
+          type: object
+          additionalProperties: true
+          description: Дополнительные данные об ошибке

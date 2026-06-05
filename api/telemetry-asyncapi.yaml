@@ -1,0 +1,170 @@
+asyncapi: 2.6.0
+info:
+  title: Telemetry Service — Async API
+  version: 1.0.0
+  description: |
+    Асинхронный контракт микросервиса Telemetry & History (Телеметрия и История).
+    Сервис принимает показания датчиков, сохраняет историю в TimescaleDB,
+    кэширует текущие значения в Redis и публикует уведомления о превышении порогов (алерты).
+
+servers:
+  production:
+    url: kafka.warmhouse.internal:9092
+    protocol: kafka
+    description: Production Kafka кластер
+  staging:
+    url: kafka-staging.warmhouse.internal:9092
+    protocol: kafka
+    description: Staging-окружение
+
+defaultContentType: application/json
+
+channels:
+  device.events:
+    description: |
+      События реестра устройств (генератор: Device Registry).
+      Сервис телеметрии слушает их, чтобы своевременно создавать/очищать кэш приборов.
+      
+      **Партиция по:** **deviceId**
+      **Retention:** 30 дней
+    subscribe:
+      operationId: consumeDeviceEvent
+      summary: Подписка на события жизненного цикла приборов
+      message:
+        oneOf:
+          - $ref: "#/components/messages/DeviceRegistered"
+          - $ref: "#/components/messages/DeviceDecommissioned"
+
+  telemetry.measurements:
+    description: |
+      Высоконагруженный поток показаний датчиков в реальном времени.
+      
+      **Партиция по:** **deviceId**
+      **Retention:** 7 дней
+    publish:
+      operationId: publishMeasurement
+      summary: Публикация сырых показаний датчиков
+      message:
+        $ref: "#/components/messages/MeasurementRecorded"
+
+  telemetry.alerts:
+    description: |
+      Оповещения о превышении порогов измерений (срабатывание триггеров алертов).
+      
+      **Партиция по:** **deviceId**
+      **Retention:** 30 дней
+    publish:
+      operationId: publishAlert
+      summary: Публикация сообщений о выходе показаний за лимиты
+      message:
+        $ref: "#/components/messages/ThresholdExceeded"
+
+components:
+  messages:
+    DeviceRegistered:
+      name: DeviceRegistered
+      title: Устройство зарегистрировано
+      summary: Новое устройство добавлено в реестр и привязано к дому
+      contentType: application/json
+      payload:
+        type: object
+        required: [deviceId, houseId, serialNumber, deviceType, occurredAt]
+        properties:
+          deviceId:
+            type: integer
+            example: 256
+          houseId:
+            type: integer
+            example: 5
+          serialNumber:
+            type: string
+            example: "TH-2024-000142"
+          deviceType:
+            type: string
+            enum: [THERMOMETER, RELAY, CAMERA, LOCK, GATE, LIGHT, MOTION_SENSOR]
+            example: "THERMOMETER"
+          moduleId:
+            type: integer
+            nullable: true
+            example: 12
+          occurredAt:
+            type: string
+            format: date-time
+            example: "2024-06-04T12:00:00Z"
+
+    DeviceDecommissioned:
+      name: DeviceDecommissioned
+      title: Устройство выведено из эксплуатации
+      contentType: application/json
+      payload:
+        type: object
+        required: [deviceId, houseId, reason, occurredAt]
+        properties:
+          deviceId:
+            type: integer
+            example: 256
+          houseId:
+            type: integer
+            example: 5
+          reason:
+            type: string
+            example: "Заменено на новую модель"
+          occurredAt:
+            type: string
+            format: date-time
+
+    MeasurementRecorded:
+      name: MeasurementRecorded
+      title: Показание датчика записано
+      summary: Одно измерение от одного датчика
+      contentType: application/json
+      payload:
+        type: object
+        required: [deviceId, value, unit, timestamp]
+        properties:
+          deviceId:
+            type: integer
+            example: 256
+          value:
+            type: number
+            format: double
+            example: 22.5
+          unit:
+            type: string
+            enum: [CELSIUS, PERCENT, LUX, BOOLEAN, WATT]
+            example: "CELSIUS"
+          timestamp:
+            type: string
+            format: date-time
+            example: "2024-06-04T14:30:00Z"
+
+    ThresholdExceeded:
+      name: ThresholdExceeded
+      title: Порог превышен
+      summary: Показание датчика вышло за настроенный порог
+      contentType: application/json
+      payload:
+        type: object
+        required: [deviceId, metric, actualValue, thresholdValue, occurredAt]
+        properties:
+          deviceId:
+            type: integer
+            example: 256
+          metric:
+            type: string
+            example: "temperature"
+          actualValue:
+            type: number
+            format: double
+            example: 35.2
+          thresholdValue:
+            type: number
+            format: double
+            example: 30.0
+          operator:
+            type: string
+            enum: [GT, LT, EQ]
+            example: "GT"
+          occurredAt:
+            type: string
+            format: date-time

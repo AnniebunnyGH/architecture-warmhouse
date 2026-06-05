@@ -1,0 +1,187 @@
+asyncapi: 2.6.0
+info:
+  title: Heating Service — Async API
+  version: 1.0.0
+  description: |
+    Асинхронный контракт микросервиса Heating & Climate Control (Отопление и Климат-контроль).
+    Сервис рассчитывает алгоритмы терморегуляции, реагирует на изменение температуры,
+    отправляет управляющие команды обогревателям и публикует события изменения статуса обогрева.
+
+servers:
+  production:
+    url: kafka.warmhouse.internal:9092
+    protocol: kafka
+    description: Production Kafka кластер
+  staging:
+    url: kafka-staging.warmhouse.internal:9092
+    protocol: kafka
+    description: Staging-окружение
+
+defaultContentType: application/json
+
+channels:
+  device.events:
+    description: |
+      События реестра устройств (генератор: Device Registry).
+      Сервис климата слушает их, чтобы освобождать зоны отопления при удалении датчиков.
+      
+      **Партиция по:** **deviceId**
+      **Retention:** 30 дней
+    subscribe:
+      operationId: consumeDeviceEvent
+      summary: Подписка на события жизненного цикла приборов
+      message:
+        oneOf:
+          - $ref: "#/components/messages/DeviceDecommissioned"
+
+  telemetry.measurements:
+    description: |
+      Поток показаний датчиков в реальном времени (генератор: Telemetry).
+      Сервис климата использует их для принятия решения о запуске/остановке котлов.
+      
+      **Партиция по:** **deviceId**
+      **Retention:** 7 дней
+    subscribe:
+      operationId: consumeMeasurement
+      summary: Подписка на показания датчиков температуры
+      message:
+        $ref: "#/components/messages/MeasurementRecorded"
+
+  heating.events:
+    description: |
+      События управления отоплением и климатом, генерируемые сервисом климат-контроля.
+      
+      **Партиция по:** **zoneId**
+      **Retention:** 30 дней
+    publish:
+      operationId: publishHeatingEvent
+      summary: Публикация изменений состояний зон климат-контроля
+      message:
+        oneOf:
+          - $ref: "#/components/messages/HeatingStarted"
+          - $ref: "#/components/messages/HeatingStopped"
+          - $ref: "#/components/messages/FreezeProtectionActivated"
+
+components:
+  messages:
+    DeviceDecommissioned:
+      name: DeviceDecommissioned
+      title: Устройство выведено из эксплуатации
+      contentType: application/json
+      payload:
+        type: object
+        required: [deviceId, houseId, reason, occurredAt]
+        properties:
+          deviceId:
+            type: integer
+            example: 256
+          houseId:
+            type: integer
+            example: 5
+          reason:
+            type: string
+            example: "Заменено на новую модель"
+          occurredAt:
+            type: string
+            format: date-time
+
+    MeasurementRecorded:
+      name: MeasurementRecorded
+      title: Показание датчика записано
+      summary: Одно измерение от одного датчика (в основном температуры)
+      contentType: application/json
+      payload:
+        type: object
+        required: [deviceId, value, unit, timestamp]
+        properties:
+          deviceId:
+            type: integer
+            example: 256
+          value:
+            type: number
+            format: double
+            example: 22.5
+          unit:
+            type: string
+            enum: [CELSIUS]
+            example: "CELSIUS"
+          timestamp:
+            type: string
+            format: date-time
+            example: "2024-06-04T14:30:00Z"
+
+    HeatingStarted:
+      name: HeatingStarted
+      title: Отопление включено
+      contentType: application/json
+      payload:
+        type: object
+        required: [zoneId, actuatorId, targetTemp, currentTemp, occurredAt]
+        properties:
+          zoneId:
+            type: integer
+            example: 3
+          actuatorId:
+            type: integer
+            description: ID реле/обогревателя
+            example: 42
+          targetTemp:
+            type: number
+            format: double
+            example: 23.0
+          currentTemp:
+            type: number
+            format: double
+            example: 19.5
+          profileName:
+            type: string
+            example: "Комфорт"
+          occurredAt:
+            type: string
+            format: date-time
+
+    HeatingStopped:
+      name: HeatingStopped
+      title: Отопление выключено
+      contentType: application/json
+      payload:
+        type: object
+        required: [zoneId, reason, occurredAt]
+        properties:
+          zoneId:
+            type: integer
+            example: 3
+          reason:
+            type: string
+            enum: [TARGET_REACHED, MANUAL_OFF, PROFILE_CHANGED, DEVICE_OFFLINE]
+            example: "TARGET_REACHED"
+          finalTemp:
+            type: number
+            format: double
+            example: 23.1
+          occurredAt:
+            type: string
+            format: date-time
+
+    FreezeProtectionActivated:
+      name: FreezeProtectionActivated
+      title: Активирована защита от замерзания
+      summary: Критическое событие — температура упала ниже 5°C
+      contentType: application/json
+      payload:
+        type: object
+        required: [zoneId, currentTemp, occurredAt]
+        properties:
+          zoneId:
+            type: integer
+            example: 3
+          currentTemp:
+            type: number
+            format: double
+            example: 3.8
+          actuatorId:
+            type: integer
+            example: 42
+          occurredAt:
+            type: string
+            format: date-time
